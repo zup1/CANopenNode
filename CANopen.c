@@ -54,6 +54,8 @@
  #define CO_TX_CNT_NMT_MST 0
 #endif
 
+#define CO_RX_CNT_NODEGUARD OD_CNT_NODE_GUARD
+
 #if OD_CNT_HB_PROD != 1
  #error OD_CNT_HB_PROD from OD.h not correct!
 #endif
@@ -258,7 +260,8 @@
  * number of them. Indexes are sorted in a way, that objects with highest
  * priority of the CAN identifier are listed first. */
 #define CO_RX_IDX_NMT_SLV   0
-#define CO_RX_IDX_SYNC      (CO_RX_IDX_NMT_SLV  + CO_RX_CNT_NMT_SLV)
+#define CO_RX_IDX_NODEGUARD (CO_RX_IDX_NMT_SLV  + CO_RX_CNT_NMT_SLV)
+#define CO_RX_IDX_SYNC      (CO_RX_IDX_NODEGUARD+ CO_RX_CNT_NODEGUARD)
 #define CO_RX_IDX_EM_CONS   (CO_RX_IDX_SYNC     + CO_RX_CNT_SYNC)
 #define CO_RX_IDX_TIME      (CO_RX_IDX_EM_CONS  + CO_RX_CNT_EM_CONS)
 #define CO_RX_IDX_GFC       (CO_RX_IDX_TIME     + CO_RX_CNT_TIME)
@@ -998,6 +1001,19 @@ CO_ReturnError_t CO_CANopenInit(CO_t *co,
                           co->CANmodule,
                           CO_GET_CO(TX_IDX_HB_PROD),
                           CO_CAN_ID_HEARTBEAT + nodeId,
+                          errInfo);
+        if (err) return err;
+    }
+
+    /* NMT_GuardTime */
+    if (CO_GET_CNT(NODE_GUARD) == 2) {
+        err = CO_NMT_LifeGuard_init(co->NMT,
+                          OD_GET(H100C, OD_H100C_GUARD_TIME),
+                          OD_GET(H100D, OD_H100D_LIFETIME_FACTOR),
+                          nodeId,
+                          co->CANmodule,
+                          CO_GET_CO(RX_IDX_NODEGUARD),
+						  CO_CAN_ID_HEARTBEAT + nodeId,
                           errInfo);
         if (err) return err;
     }

@@ -53,6 +53,78 @@ static void CO_NMT_receive(void *object, void *msg) {
     }
 }
 
+/*
+ * Read received message from CAN module.
+ *
+ * Function will be called (by CAN receive interrupt) every time, when CAN
+ * message with correct identifier will be received. For more information and
+ * description of parameters see file CO_driver.h.
+ */
+static void CO_NMT_receive_guardTime(void *object, void *msg) {
+    uint8_t DLC = CO_CANrxMsg_readDLC(msg);
+    uint8_t ident = CO_CANrxMsg_readIdent(msg);
+
+    CO_NMT_t *NMT = (CO_NMT_t*)object;
+
+    if (DLC == 0 && ident == NMT->nodeId) {
+        NMT->internalCommand = CO_NMT_LIFE_GUARDING;
+
+#if (CO_CONFIG_NMT) & CO_CONFIG_FLAG_CALLBACK_PRE
+        /* Optional signal to RTOS, which can resume task, which handles NMT. */
+        if (NMT->pFunctSignalPre != NULL) {
+            NMT->pFunctSignalPre(NMT->functSignalObjectPre);
+        }
+#endif
+    }
+}
+
+/*
+ * Custom function for writing OD object "Guard time"
+ *
+ * For more information see file CO_ODinterface.h, OD_IO_t.
+ */
+static ODR_t OD_write_100C(OD_stream_t *stream, const void *buf,
+                           OD_size_t count, OD_size_t *countWritten)
+{
+    if (stream == NULL || stream->subIndex != 0 || buf == NULL
+        || count != sizeof(uint16_t) || countWritten == NULL
+    ) {
+        return ODR_DEV_INCOMPAT;
+    }
+
+    CO_NMT_t *NMT = (CO_NMT_t *)stream->object;
+
+    /* update object */
+    NMT->GuardTime_us = (uint32_t)CO_getUint16(buf) * 1000;
+    NMT->GuardTimeTimer = 0;
+
+    /* write value to the original location in the Object Dictionary */
+    return OD_writeOriginal(stream, buf, count, countWritten);
+}
+
+/*
+ * Custom function for writing OD object "Life time factor"
+ *
+ * For more information see file CO_ODinterface.h, OD_IO_t.
+ */
+static ODR_t OD_write_100D(OD_stream_t *stream, const void *buf,
+                           OD_size_t count, OD_size_t *countWritten)
+{
+    if (stream == NULL || stream->subIndex != 0 || buf == NULL
+        || count != sizeof(uint8_t) || countWritten == NULL
+    ) {
+        return ODR_DEV_INCOMPAT;
+    }
+
+    CO_NMT_t *NMT = (CO_NMT_t *)stream->object;
+
+    /* update object */
+    NMT->LifeTimeFactor = (uint32_t)CO_getUint8(buf);
+    NMT->GuardTimeTimer = 0;
+
+    /* write value to the original location in the Object Dictionary */
+    return OD_writeOriginal(stream, buf, count, countWritten);
+}
 
 /*
  * Custom function for writing OD object "Producer heartbeat time"
@@ -78,6 +150,81 @@ static ODR_t OD_write_1017(OD_stream_t *stream, const void *buf,
     return OD_writeOriginal(stream, buf, count, countWritten);
 }
 
+
+/******************************************************************************/
+CO_ReturnError_t CO_NMT_LifeGuard_init(CO_NMT_t *NMT,
+                             OD_entry_t *OD_100C_GuardTime,
+                             OD_entry_t *OD_100D_LifeTimeFactor,
+                             uint8_t nodeId,
+                             CO_CANmodule_t *NMT_CANdevRx,
+                             uint16_t NMT_rxIdx,
+                             uint16_t CANidRxNMT,
+                             uint32_t *errInfo)
+{
+    CO_ReturnError_t ret = CO_ERROR_NO;
+
+    /* verify arguments */
+    if (NMT == NULL || OD_100C_GuardTime == NULL || OD_100D_LifeTimeFactor == NULL
+        || NMT_CANdevRx == NULL
+    ) {
+        return CO_ERROR_ILLEGAL_ARGUMENT;
+    }
+
+    /* get and verify required "Guard time" from Object Dict. */
+	uint16_t GuardTime_ms;
+	ODR_t odRet = OD_get_u16(OD_100C_GuardTime, 0, &GuardTime_ms, true);
+	if (odRet != ODR_OK) {
+		if (errInfo != NULL) *errInfo = OD_getIndex(OD_100C_GuardTime);
+		return CO_ERROR_OD_PARAMETERS;
+	}
+	NMT->GuardTime_us = (uint32_t)GuardTime_ms * 1000;
+
+	NMT->OD_100C_extension.object = NMT;
+	NMT->OD_100C_extension.read = OD_readOriginal;
+	NMT->OD_100C_extension.write = OD_write_100C;
+	odRet = OD_extension_init(OD_100C_GuardTime, &NMT->OD_100C_extension);
+	if (odRet != ODR_OK) {
+		if (errInfo != NULL) *errInfo = OD_getIndex(OD_100C_GuardTime);
+		return CO_ERROR_OD_PARAMETERS;
+	}
+
+    /* get and verify required "Life time factor" from Object Dict. */
+	uint8_t LifeTimeFactor;
+	odRet = OD_get_u8(OD_100D_LifeTimeFactor, 0, &LifeTimeFactor, true);
+	if (odRet != ODR_OK) {
+		if (errInfo != NULL) *errInfo = OD_getIndex(OD_100D_LifeTimeFactor);
+		return CO_ERROR_OD_PARAMETERS;
+	}
+	NMT->LifeTimeFactor = LifeTimeFactor;
+
+	NMT->OD_100D_extension.object = NMT;
+	NMT->OD_100D_extension.read = OD_readOriginal;
+	NMT->OD_100D_extension.write = OD_write_100D;
+	odRet = OD_extension_init(OD_100D_LifeTimeFactor, &NMT->OD_100D_extension);
+	if (odRet != ODR_OK) {
+		if (errInfo != NULL) *errInfo = OD_getIndex(OD_100D_LifeTimeFactor);
+		return CO_ERROR_OD_PARAMETERS;
+	}
+
+    if (NMT->GuardTimeTimer > NMT->GuardTime_us * NMT->LifeTimeFactor) {
+        NMT->GuardTimeTimer = NMT->GuardTime_us * NMT->LifeTimeFactor;
+    }
+
+    /* configure NMT CAN reception */
+    ret = CO_CANrxBufferInit(
+            NMT_CANdevRx,       /* CAN device */
+            NMT_rxIdx,          /* rx buffer index */
+			CO_CAN_ID_HEARTBEAT|nodeId,          /* CAN identifier */
+            0x7FF,              /* mask */
+            1,                  /* rtr */
+            (void*)NMT,         /* object passed to receive function */
+			CO_NMT_receive_guardTime);    /* this function will process received message*/
+    if (ret != CO_ERROR_NO) {
+        return ret;
+    }
+
+    return ret;
+}
 
 /******************************************************************************/
 CO_ReturnError_t CO_NMT_init(CO_NMT_t *NMT,
@@ -231,6 +378,9 @@ CO_NMT_reset_cmd_t CO_NMT_process(CO_NMT_t *NMT,
     NMT->HBproducerTimer = (NMT->HBproducerTimer > timeDifference_us )
                          ? (NMT->HBproducerTimer - timeDifference_us) : 0;
 
+    NMT->GuardTimeTimer = (NMT->GuardTimeTimer > timeDifference_us )
+                         ? (NMT->GuardTimeTimer - timeDifference_us) : 0;
+
     /* Send heartbeat producer message if:
      * - First start, send bootup message or
      * - HB producer enabled and: Timer expired or NMT->operatingState changed*/
@@ -254,6 +404,21 @@ CO_NMT_reset_cmd_t CO_NMT_process(CO_NMT_t *NMT,
             NMT->HBproducerTimer = NMT->HBproducerTime_us;
         }
     }
+    /* Send heartbeat producer message if:
+     * - Life time protocol enabled and: Timer expired and in operational */
+    if (NMT->GuardTime_us != 0 && &NMT->LifeTimeFactor != 0 && NMT->GuardTimeTimer == 0 ) {
+
+        if (NMTstateCpy == CO_NMT_OPERATIONAL) {
+            NMTstateCpy = CO_NMT_PRE_OPERATIONAL;
+            NMT->HB_TXbuff->data[0] = (uint8_t) NMTstateCpy;
+            CO_CANsend(NMT->HB_CANdevTx, NMT->HB_TXbuff);
+        }
+        else {
+            /* Start timer from the beginning. */
+            NMT->GuardTimeTimer = NMT->GuardTime_us * NMT->LifeTimeFactor;
+        }
+    }
+
     NMT->operatingStatePrev = NMTstateCpy;
 
     /* process internal NMT commands, received from CO_NMT_receive() or
@@ -274,6 +439,12 @@ CO_NMT_reset_cmd_t CO_NMT_process(CO_NMT_t *NMT,
                 break;
             case CO_NMT_RESET_COMMUNICATION:
                 resetCommand = CO_RESET_COMM;
+                break;
+            case CO_NMT_LIFE_GUARDING:
+                NMT->HB_TXbuff->data[0] = NMT->toggleStatus + (uint8_t) NMTstateCpy;
+                CO_CANsend(NMT->HB_CANdevTx, NMT->HB_TXbuff);
+                NMT->toggleStatus = NMT->toggleStatus == 0 ? 0x80 : 0;
+                NMT->GuardTimeTimer = NMT->GuardTime_us * NMT->LifeTimeFactor;
                 break;
             default:
                 break;

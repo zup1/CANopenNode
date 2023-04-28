@@ -103,7 +103,9 @@ typedef enum {
     /** 129, Reset device */
     CO_NMT_RESET_NODE = 129,
     /** 130, Reset CANopen communication on device */
-    CO_NMT_RESET_COMMUNICATION = 130
+    CO_NMT_RESET_COMMUNICATION = 130,
+    /** 700, Send node status */
+    CO_NMT_LIFE_GUARDING = 700
 } CO_NMT_command_t;
 
 
@@ -173,6 +175,15 @@ typedef struct {
     uint8_t nodeId;
     /** From CO_NMT_init() */
     CO_NMT_control_t NMTcontrol;
+    /** Guard time, calculated from OD 0x100C and OD 0x100D */
+    uint32_t GuardTime_us;
+    uint8_t LifeTimeFactor;
+    /** Internal timer for Guard time */
+    uint32_t GuardTimeTimer;
+    uint8_t toggleStatus;
+    /** Extension for OD object */
+    OD_extension_t OD_100C_extension;
+    OD_extension_t OD_100D_extension;
     /** Producer heartbeat time, calculated from OD 0x1017 */
     uint32_t HBproducerTime_us;
     /** Internal timer for HB producer */
@@ -203,6 +214,32 @@ typedef struct {
 #endif
 } CO_NMT_t;
 
+/**
+ * Initialize Life Guarding protocol object.
+ *
+ * Function must be called in the communication reset section.
+ *
+ * @param NMT
+ * @param OD_100C_GuardTime OD entry for 0x100C -"Guard time",
+ * entry is required, IO extension is optional for runtime configuration.
+ * @param OD_100D_LifeTimeFactor OD entry for 0x100D -"Life time factor",
+ * entry is required, IO extension is optional for runtime configuration.
+ * @param nodeId CANopen Node ID of this device.
+ * @param NMT_CANdevRx CAN device for NMT reception.
+ * @param NMT_rxIdx Index of receive buffer in above CAN device.
+ * @param CANidRxNMT CAN identifier for NMT receive message.
+ * @param [out] errInfo Additional information in case of error, may be NULL.
+ *
+ * @return #CO_ReturnError_t CO_ERROR_NO on success.
+ */
+CO_ReturnError_t CO_NMT_LifeGuard_init(CO_NMT_t *NMT,
+                             OD_entry_t *OD_100C_GuardTime,
+                             OD_entry_t *OD_100D_LifeTimeFactor,
+                             uint8_t nodeId,
+                             CO_CANmodule_t *NMT_CANdevRx,
+                             uint16_t NMT_rxIdx,
+                             uint16_t CANidRxNMT,
+                             uint32_t *errInfo);
 
 /**
  * Initialize NMT and Heartbeat producer object.
