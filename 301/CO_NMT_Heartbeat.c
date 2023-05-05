@@ -406,7 +406,7 @@ CO_NMT_reset_cmd_t CO_NMT_process(CO_NMT_t *NMT,
     }
     /* Send heartbeat producer message if:
      * - Life time protocol enabled and: Timer expired and in operational */
-    if (NMT->GuardTime_us != 0 && &NMT->LifeTimeFactor != 0 && NMT->GuardTimeTimer == 0 ) {
+    if (NMT->GuardTime_us != 0 && NMT->LifeTimeFactor != 0 && NMT->GuardTimeTimer == 0 ) {
 
         if (NMTstateCpy == CO_NMT_OPERATIONAL) {
             NMTstateCpy = CO_NMT_PRE_OPERATIONAL;
